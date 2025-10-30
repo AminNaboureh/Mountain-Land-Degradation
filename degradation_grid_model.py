@@ -16,13 +16,13 @@ mountain_raster_band = mountain_raster_dataset.GetRasterBand(1)
 x_size=mountain_raster_band.XSize
 y_size=mountain_raster_band.YSize
 
-#将500米山地像元转480米
+
 # x_size_new = x_size + 403
 # y_size_new = y_size + 337
 
 mountain_nodata=mountain_raster_band.GetNoDataValue()
 
-# 读取绿色/非绿色土地覆被栅格数据
+
 # landcover_raster_path = "E:/Data/Data processing/mountain_land_area/green_nogreen.tif"
 landcover_raster_path = "F:/Data/Data processing/mountain_land_area/degradation_2022.tif"
 landcover_raster_dataset = gdal.Open(landcover_raster_path)
@@ -32,7 +32,7 @@ xsize_land=landcover_raster_band.XSize
 ysize_land=landcover_raster_band.YSize
 
 
-    # 读取表面积栅格数据
+
 surface_area_raster_path = "F:/Data/Data processing/mountain_land_area/surface_area_100_cj.tif"
 surface_area_raster_dataset = gdal.Open(surface_area_raster_path)
 surface_area_raster_band = surface_area_raster_dataset.GetRasterBand(1)
@@ -42,7 +42,7 @@ y_size_surface = surface_area_raster_band.YSize
 
 transform = mountain_raster_dataset.GetGeoTransform()
 
-    # 计算山地栅格和绿色/非绿色土地覆被栅格的分辨率比例
+
 scale_factor = int(transform[1] / 100)#scale_factor = 16
     
 block_size = 1000
@@ -67,7 +67,7 @@ for x in range(0, x_size, block_size):
         if rows_new < 5000:
             rows_new = ysize_land - block_size * scale_factor * 8
             
-        #表面积和绿色像元由于分辨率差，在山地分块的基础上乘比例因子scale_factor
+      
         landcover_block = landcover_raster_band.ReadAsArray(x*scale_factor,y*scale_factor,cols_new,rows_new)
       
         surface_block = surface_area_raster_band.ReadAsArray(x*scale_factor,y*scale_factor,cols_new,rows_new)
@@ -79,14 +79,13 @@ def calculate_green_ratio(args):
     cols, rows, scale_factor, landcover_block, surface_block = args
     count=0
     
-    #新建数组存放每个数据块计算得到的绿色覆盖指数
     green_ratio_array=np.zeros((rows,cols), dtype=int)
     
-    #遍历每个数据块的山地像元
+
     for  i  in range(0, rows):
         
         for j in range(0, cols):
-            # 获取当前500米山地像元内的绿色像元的表面积和总表面积
+           
             green_area_sum = 0
             total_area_sum = 0
             count+=1
@@ -103,10 +102,10 @@ def calculate_green_ratio(args):
                         landcover_value = landcover_block[row_index, col_index]
                         surface_area = surface_block[row_index, col_index]
                         
-                        #计算提个山地像元总表面积
+                      
                         total_area_sum += surface_area
                        
-                        #计算一个山地像元内的绿色表面积综合
+                       
                         if landcover_value == -1:                        
                             green_area_sum += surface_area
 
@@ -131,7 +130,7 @@ def calculate_green_ratio(args):
 
 result_blocks = []
 
-# 处理每个数据块，并将结果存储到列表中
+
 for idx, args in enumerate(args_list):
     
     result_block = calculate_green_ratio(args)
@@ -144,7 +143,7 @@ for idx, args in enumerate(args_list):
     
 # print(result_blocks)
 
-# 将结果数据块按照要求排列成一个大的数组
+
 #final_result_array = np.vstack(result_blocks[i:i+3]) for i in range(0, len(result_blocks), 3)
 
 final_result_array = np.hstack([np.vstack(result_blocks[i:i+9]) for i in range(0, len(result_blocks), 9)])
@@ -152,7 +151,7 @@ final_result_array = np.hstack([np.vstack(result_blocks[i:i+9]) for i in range(0
 # print(final_result_array.shape[1],final_result_array.shape[0])
 # print(final_result_array.shape)
 
-target_resolution = 500  # 目标分辨率，单位：米
+target_resolution = 500  
 x_resolution = transform[1]
 y_resolution = transform[5]
 scale_factor = int(round(target_resolution / abs(x_resolution)))
@@ -172,16 +171,17 @@ new_rows = int(final_result_array.shape[0] * 500 / 500)
 # output_raster = None   
 
 
-# 修改地理变换信息
+
 new_transform = (transform[0], target_resolution, transform[2], transform[3], transform[4], -target_resolution)
 
-# 导出为tif
+
 output_path = "F:/Data/tuihuabili/PDML/Degradation_2022.tif"
 driver = gdal.GetDriverByName("GTiff")
 output_raster = driver.Create(output_path, new_cols, new_rows, 1, gdal.GDT_Int32)
 output_raster.GetRasterBand(1).WriteArray(final_result_array)
-# 设置新的地理变换信息
+
 output_raster.SetGeoTransform(new_transform)
-output_raster.SetProjection(mountain_raster_dataset.GetProjection())  # 使用你原始数据的投影信息
+output_raster.SetProjection(mountain_raster_dataset.GetProjection()) 
 output_raster.FlushCache()
+
 output_raster = None  
