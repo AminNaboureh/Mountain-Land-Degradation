@@ -1,0 +1,448 @@
+//the code below is on GEE platform for cacluation the NDVI trend of this paper.
+
+var roi = table5;
+var list = roi.toList(roi.size())
+print(list)
+
+// var roi = table4;
+
+// function gridSplit (roi, n, m) {
+//   var bounds = roi.geometry().bounds().getInfo().coordinates[0];
+
+//   var xmin = bounds[0][0]-0.1;
+//   var xmax = bounds[1][0]+0.1;
+//   var ymin = bounds[0][1]-0.1;
+//   var ymax = bounds[2][1]+0.1;
+//   print(xmin,ymin,xmax,ymax);
+
+//   var dx = (xmax-xmin)/n;
+//   var dy = (ymax-ymin)/m;
+
+//   var xx = ee.List.sequence(xmin, xmax, dx);
+//   var yy = ee.List.sequence(ymin, ymax, dy);
+
+//   var rects = xx.map(function(i){  
+//     return yy.map(function(j){  
+//       var x1 = ee.Number(i);  
+//       var x2 = ee.Number(i).add(ee.Number(dx));  
+//       var y1 = ee.Number(j);  
+//       var y2 = ee.Number(j).add(ee.Number(dy));  
+//       var coords = ee.List([x1, y1, x2, y2]);  
+//       var rect = ee.Algorithms.GeometryConstructors.Rectangle(coords);  
+//       return ee.Feature(rect);  });
+//   }).flatten();
+
+//       var rects_col = ee.FeatureCollection(rects).filterBounds(roi.geometry());
+
+//       var GridNum =rects_col.size().getInfo();
+//       print('GridNum: ', GridNum);
+
+//       var idList=ee.List.sequence(0, GridNum-1);
+//       var grid = ee.FeatureCollection(idList.map(function(i) {  
+//         return ee.Feature(rects_col.toList(rects_col.size()).get(i)).set("grid_id",ee.Number(i).add(1));
+        
+//       }));
+//         return grid;
+// }
+// var subroi = gridSplit(roi, 20, 20);
+// var list = subroi.toList(subroi.size());
+// print(list)
+
+// var roi = table5;
+// var list = roi.toList(roi.size())
+// print(list)
+
+
+function applyScaleFactors(image) {
+  var opticalBands = image.select('SR_B.').multiply(0.0000275).add(-0.2);
+  var thermalBands = image.select('ST_B.*').multiply(0.00341802).add(149.0);
+  return image.addBands(opticalBands, null, true)
+              .addBands(thermalBands, null, true);
+}
+
+
+var processCountry = function(index) {
+  var geometry = ee.Feature(list.get(index));
+  var roi_geometry = geometry.geometry();
+  
+  var L8 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+                  .filterBounds(roi_geometry)
+                  .filter(ee.Filter.calendarRange(2014, 2022, 'year'))
+                  .map(applyScaleFactors)
+                  .select(['SR_B4', 'SR_B5', 'QA_PIXEL'], ['red', 'nir', 'QA_PIXEL']);
+                  
+  var L7 = ee.ImageCollection('LANDSAT/LE07/C02/T1_L2')
+                  .filterBounds(roi_geometry)
+                  .filter(ee.Filter.calendarRange(2012, 2013, 'year'))
+                  .map(applyScaleFactors)
+                  .select(['SR_B3', 'SR_B4', 'QA_PIXEL'], ['red', 'nir', 'QA_PIXEL']);
+  
+  var L5 = ee.ImageCollection('LANDSAT/LT05/C02/T1_L2')
+                  .filterBounds(roi_geometry)
+                  .filter(ee.Filter.calendarRange(2007, 2011, 'year'))
+                  .map(applyScaleFactors)
+                  .select(['SR_B3', 'SR_B4', 'QA_PIXEL'], ['red', 'nir', 'QA_PIXEL']);
+  
+  var Landsat = ee.ImageCollection(L8.merge(L7).merge(L5)).sort("system:time_start");
+  
+
+  function rmCloudNew(image) {
+    var cloudShadowBitMask = (1 << 4); 
+    var cloudsBitMask = (1 << 3); 
+    var qa = image.select('QA_PIXEL'); 
+    var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+                  .and(qa.bitwiseAnd(cloudsBitMask).eq(0)); 
+    return image.updateMask(mask)
+                .copyProperties(image)
+                .copyProperties(image, ["system:time_start"]);
+  }
+  var filtered = Landsat.map(rmCloudNew)
+
+  var filtered = filtered.map(function(image) {
+    var timeImage = image.metadata('system:time_start').rename('timestamp')
+    // The time image doesn't have a mask. 
+    // We set the mask of the time band to be the same as the first band of the image
+    var timeImageMasked = timeImage.updateMask(image.mask().select(0))
+    return image.addBands(timeImageMasked)
+  })
+  var days = 160
+  var millis = ee.Number(days).multiply(1000*60*60*24)
+  var maxDiffFilter = ee.Filter.maxDifference({
+    difference: millis,
+    leftField: 'system:time_start',
+    rightField: 'system:time_start'
+  })
+  
+  var lessEqFilter = ee.Filter.lessThanOrEquals({
+    leftField: 'system:time_start',
+    rightField: 'system:time_start'
+  })
+  
+  var greaterEqFilter = ee.Filter.greaterThanOrEquals({
+    leftField: 'system:time_start',
+    rightField: 'system:time_start'
+  })
+  
+  var filter1 = ee.Filter.and(maxDiffFilter, lessEqFilter)
+  var join1 = ee.Join.saveAll({
+    matchesKey: 'after',
+    ordering: 'system:time_start',
+    ascending: false})
+    
+  var join1Result = join1.apply({
+    primary: filtered,
+    secondary: filtered,
+    condition: filter1
+  })
+  var filter2 = ee.Filter.and(maxDiffFilter, greaterEqFilter)
+  var join2 = ee.Join.saveAll({
+    matchesKey: 'before',
+    ordering: 'system:time_start',
+    ascending: true})
+    
+  var join2Result = join2.apply({
+    primary: join1Result,
+    secondary: join1Result,
+    condition: filter2
+  })
+  
+  var interpolateImages = function(image) {
+    var image = ee.Image(image)
+    var beforeImages = ee.List(image.get('before'))
+    var beforeMosaic = ee.ImageCollection.fromImages(beforeImages).mosaic()
+    var afterImages = ee.List(image.get('after'))
+    var afterMosaic = ee.ImageCollection.fromImages(afterImages).mosaic()
+  
+    var t1 = beforeMosaic.select('timestamp').rename('t1')
+    var t2 = afterMosaic.select('timestamp').rename('t2')
+  
+    var t = image.metadata('system:time_start').rename('t')
+  
+    var timeImage = ee.Image.cat([t1, t2, t])
+  
+    var timeRatio = timeImage.expression('(t - t1) / (t2 - t1)', {
+      't': timeImage.select('t'),
+      't1': timeImage.select('t1'),
+      't2': timeImage.select('t2'),
+    })
+    
+    var interpolated = beforeMosaic
+      .add((afterMosaic.subtract(beforeMosaic).multiply(timeRatio)))
+    // Replace the masked pixels in the current image with the average value
+    var result = image.unmask(interpolated)
+    return result.copyProperties(image, ['system:time_start'])
+  }
+  
+  // map() the function to interpolate all images in the collection
+  var interpolatedCol = ee.ImageCollection(join2Result.map(interpolateImages))
+  
+  function addNDVI(image) {
+    var ndvi = image.normalizedDifference(['nir','red']).rename('ndvi');
+    return image.addBands(ndvi);
+  }
+  // var ndviVis = {min:0, max: 0.9,  palette: [
+  //     'FFFFFF', 'CE7E45', 'DF923D', 'F1B555', 'FCD163', '99B718', '74A901',
+  //     '66A000', '529400', '3E8601', '207401', '056201', '004C00', '023B01',
+  //     '012E01', '011D01', '011301'
+  //   ]}
+  
+  // var visualizeImage = function(image) {
+  //   return image.select('ndvi').visualize(ndviVis).clip(roi_geometry)
+  // }
+  
+  // var visCollectionOriginal = filtered
+  //   .map(addNDVI)
+  //   .map(visualizeImage)
+    
+  var visCollectionInterpolated = interpolatedCol
+    .map(addNDVI)
+    
+  // print('xianxingchazhi', visCollectionInterpolated.limit(5));
+  // Map.centerObject(roi_geometry,6); 
+  // Map.addLayer(visCollectionInterpolated.select('ndvi').first().clip(roi_geometry),{},'visCollectionInterpolated')
+  
+  // //*****************************SG Filter******************************//
+  // var years = ee.List.sequence(2000,2015)
+  // var AnnualImage_sg = function(year){
+  //   var startDate = ee.Date.fromYMD(year,1,1)
+  //   var endDate = ee.Date.fromYMD(year,12,31)   
+  //   var annualdata = visCollectionInterpolated.filter(ee.Filter.date(startDate, endDate))
+    
+  //   // //sg filter for annual data
+  //   // //reference: https://www.open-geocomputing.org/OpenEarthEngineLibrary/#.ImageCollection.SavatskyGolayFilter
+  //   // //load functions base
+  //   var oeel=require('users/OEEL/lib:loadAll')
+  
+  //   // interpolate between data and smooth out
+  //   var LAI_sg =oeel.ImageCollection.SavatskyGolayFilter(annualdata.select('ndvi'), //select('Gpp') or ('Lai_500m')
+  //         ee.Filter.maxDifference(1000*3600*24*160, 'system:time_start', null, 'system:time_start'),
+  //         function(infromedImage,estimationImage){
+  //           return ee.Image.constant(ee.Number(infromedImage.get('system:time_start'))
+  //             .subtract(ee.Number(estimationImage.get('system:time_start'))));},
+  //         3,['ndvi']); //['Gpp'] or ['Lai_500m']
+    
+  //   //define growing season
+  //   var growing_start = ee.Date.fromYMD(year,4,1)
+  //   var growing_end = ee.Date.fromYMD(year,10,31)
+  //   var growing_season = LAI_sg.filterDate(growing_start,growing_end)      //growing season: May-September 
+    
+  //  
+  //   var SG_LAI = growing_season.select('d_0_ndvi').reduce(ee.Reducer.mean()).rename('sg_ndvi') //LAI:0.1;GPP:0.1(g*c/m^2) 
+    
+  //   
+  //   return SG_LAI.set({
+  //     'system:time_start':startDate.millis(),
+  //     'system:time_end':endDate.millis(),
+  //     'year':year,
+  //   })
+    
+  // }
+  // // get imagecollection from 2000 to 2022
+  // var yearlyImages = years.map(AnnualImage_sg)  //results by sg filter
+  // var collectyear = ee.ImageCollection.fromImages(yearlyImages)
+  
+  //   //juheweinianduzhi  
+  var startYear = 2007;
+  var endYear = 2022;
+  var years = ee.List.sequence(startYear, endYear);
+  var collectyear = ee.ImageCollection(years  
+    .map(function(year) {
+    var start = ee.Date.fromYMD(year, 4, 1);
+    var end = ee.Date.fromYMD(year, 10, 30);
+    // Filter the image collections for the year
+    var landsat = visCollectionInterpolated.filterDate(start, end).select('ndvi');
+    // var modis = MOD13Q1_ndvi.filterDate(start, end).mean().reproject('EPSG:4326', null, 250);
+    // Blend, reduce, and clip the images
+    return landsat.reduce(ee.Reducer.mean()).float().rename('mean_ndvi').clip(roi_geometry) 
+                .set('year', year)
+                .set('system:time_start', start.millis());
+  }));
+  
+  // Map.centerObject(roi_geometry,6); 
+  // Map.addLayer(collectyear.select('mean_ndvi').first().clip(roi_geometry),{},'collectyear')
+
+  
+  var processImage = function(image) {
+  var year = ee.Number.parse(image.get('system:index')); 
+  var yearImage = ee.Image.constant(year).toShort();
+  return ee.Image.cat(yearImage, image).rename(['year', 'data']).set('year', year);
+  };
+  
+  var processedCol = collectyear.map(processImage);
+  // print('Annual datasets', processedCol);
+  // print(processedCol, 'processedCol')
+  // Thiel-Sen slope 𝛽
+  var sens = processedCol.reduce(ee.Reducer.sensSlope());
+  
+  // print('senslope',sens)
+  // Map.centerObject(roi_geometry,6)
+  // Map.addLayer(sens.select('slope').clip(roi_geometry), {}, 'ndvi_year')
+  
+  // print('senslope',sens)
+  //***mann-kendall***//
+  var afterFilter = ee.Filter.lessThan({
+      leftField:'system:time_start',
+      rightField:'system:time_start'
+  });
+  
+  // print('afterFilter',afterFilter)
+  
+  //return a Join 
+  var joined = ee.ImageCollection(ee.Join.saveAll('after').apply({
+    primary: collectyear,
+    secondary: collectyear,
+    condition:afterFilter
+  }));
+  
+
+  var sign = function(i,j){
+    return i.expression('diff < 0 ? -1:(diff > 0 ? 1:0)',{
+      diff:j.subtract(i)
+    })
+  }
+  
+ 
+  var S = ee.ImageCollection(joined.map(function(current) {
+    var afterCollection = ee.ImageCollection.fromImages(current.get('after'));
+    return afterCollection.map(function(image){
+      return ee.Image(sign(current,image)).unmask(0);  
+      //why unmask(0)?
+      // The unmask is to prevent accumulation of masked pixels that
+      // result from the undefined case of when either current or image
+      // is masked.  It won't affect the sum, since it's unmasked to zero.
+    });
+  }).flatten()).reduce('sum'); // Set parallelScale to avoid User memory limit exceeded.
+  
+  // //Map.addLayer(kendall.clip(qtp),{},'kedall_m')
+  
+  //  Same values that are in a group (ties).  Set all else to zero.
+
+  var groups = collectyear.map(function(i) {
+    var matches = collectyear.map(function(j) {
+      return i.eq(j); // i and j are images.
+    }).sum();
+    return i.multiply(matches.gt(1));
+  });
+  
+  //check groups 
+  //results:
+  //print(groups)
+  //Map.addLayer(groups.first().clip(aoi),{},'groups')
+  
+  //  Compute tie group sizes in a sequence.  The first group is discarded.
+ 
+  var group = function(array) {
+    var length = array.arrayLength(0);
+    // Array of indices.  These are 1-indexed.
+    var indices = ee.Image([1])
+        .arrayRepeat(0, length)
+        .arrayAccum(0, ee.Reducer.sum())
+        .toArray(1);
+    var sorted = array.arraySort();
+    var left = sorted.arraySlice(0, 1);
+    var right = sorted.arraySlice(0, 0, -1);
+    // Indices of the end of runs.
+    var mask = left.neq(right)
+    // Always keep the last index, the end of the sequence.
+        .arrayCat(ee.Image(ee.Array([[1]])), 0);
+    var runIndices = indices.arrayMask(mask);
+    // Subtract the indices to get run lengths.
+    var groupSizes = runIndices.arraySlice(0, 1)
+        .subtract(runIndices.arraySlice(0, 0, -1));
+    return groupSizes;
+  };
+  
+  // VarS compute.
+  //https://blog.csdn.net/liuchengzimozigreat/article/details/87931248
+  var factors = function(image) {
+    return image.expression('b() * (b() - 1) * (b() * 2 + 5)');
+  };
+  
+ 
+  var groupSizes = group(groups.toArray());
+  var groupFactors = factors(groupSizes);
+  var groupFactorSum = groupFactors.arrayReduce('sum', [0])
+        .arrayGet([0, 0]);
+  
+  //I wanna check group's value
+  // print('groupSizes',groupSizes)
+  // print('groupFactors',groupFactors)
+  // print('groupFactorSum',groupFactorSum)
+  // Map.addLayer(groupSizes.clip(aoi),{},'groupSizes')
+  // Map.addLayer(groupFactors.clip(aoi),{},'groupFactors')
+  // Map.addLayer(groupFactorSum.clip(aoi),{},'groupFactorSum')
+  
+  //var count = joined.count(); 
+  //var count = ee.Image(23)
+  //yearCol:
+  var count = collectyear.count()
+  //print('count',count)
+  //Map.addLayer(count.clip(aoi),{},'count')
+  
+  var VarS = factors(count)
+      //Note that you can comment .subtract(groupFactorSum) in the computation of kendallVariance 
+      //if you don't care about ties and want to disregard that correction.
+      .subtract(groupFactorSum)      
+      .divide(18)
+      .float();
+      
+  // var VARs = kendallVariance.clip(qtp);
+  // //Map.addLayer(VARs, {}, 'VARs');
+  
+  // Compute Z-statistics.
+  //var zero = ee.Image(0).multiply(S.eq(0));
+  var zero = S.multiply(S.eq(0));
+  var pos = S.multiply(S.gt(0)).subtract(1);
+  var neg = S.multiply(S.lt(0)).add(1);
+  
+
+  // var z = zero
+  //     .add(pos.divide(VarS.sqrt()))
+  //     .add(neg.divide(VarS.sqrt()));
+      
+
+  var z = zero
+      .where(S.gt(0), pos.divide(VarS.sqrt()))
+      .where(S.lt(0), neg.divide(VarS.sqrt()));
+      
+  // Map.centerObject(roi_geometry,7);
+  // Map.addLayer(z.clip(roi_geometry),{},'Z-value')
+  
+  
+  var slope = sens.select('slope')
+  var sig_class = slope.where((z.abs().gte(1.96)).and(slope.gt(0)),1)
+                      .where((z.abs().gte(1.96)).and(slope.lt(0)),-1)
+                      .where(z.abs().lt(1.96),2)
+                      //.where((z.eq(0)),2)
+                      .int()
+  // Apply a Gaussian blur to the image
+  // var blurred = sig_class.convolve(ee.Kernel.gaussian(5, 3));
+  
+  var visParams = {
+    min: -1,
+    max: 2,
+    palette: ['red', 'green', '#ADD8E6'] 
+  };
+  
+  Map.centerObject(roi_geometry,6); 
+  // Map.addLayer(slope.clip(roi_geometry),{},'slope')
+  
+  Map.addLayer(sig_class.clip(roi_geometry),visParams,'sig class')
+  
+  var sig = sig_class.clip(roi_geometry)
+  Export.image.toDrive({
+	image:sig,
+	description:'ndvi_trends_2007_2022_' + i,
+	folder:'NDVI_Trends',
+	region:roi_geometry,
+	scale:30,
+	crs:"EPSG:4326",
+	maxPixels:1e13,
+	fileFormat:'GeoTIFF',
+  })
+};
+
+var n = roi.size().getInfo();
+for (var i = 0; i < n; i++) {  
+  processCountry(i);
+}
